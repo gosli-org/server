@@ -1,20 +1,13 @@
 # Gosli Server
 
-## Overview
+`goslid` is the server component of Gosli. It runs on the host
+and provides clients with remote access to projects, terminal
+sessions, and AI tools.
 
-Gosli Server gives connected clients access to projects and a locally installed
-CLI executor on the computer running the server.
+It allows clients to:
+- Browse projects available on the host.
+- Open terminal sessions in project directories and interact with them.
+- Send requests to AI tools and receive responses without opening a terminal.
 
-Clients send requests to the server. To perform work in a project, the server
-starts the executor in the project directory and forwards its output and
-completion status to the requesting client. The executor performs the requested
-work.
-
-The server discovers available projects. See [GLOSSARY.md](GLOSSARY.md) for domain
-term definitions.
-
-## Technical details
-
-- Language: Go.
-- Service name: `goslid`.
-- Client communication: WebSocket.
+The server creates and manages terminal sessions and handles
+client requests. Clients can connect directly or through a relay.
