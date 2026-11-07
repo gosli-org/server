@@ -13,7 +13,6 @@ Use the `gh` CLI from this clone.
 - Close: `gh issue close <number> --comment "..."`.
 
 Use temporary files for multiline issue bodies and comments.
-Before triaging, read `docs/agents/triage-labels.md`.
 
 When a skill says "publish to the issue tracker", create a GitHub issue.
 When it says "fetch the relevant ticket", read the GitHub issue.
