@@ -83,7 +83,11 @@ func (m *Manager) Open() (*Session, error) {
 		defer m.wg.Done()
 		cmd.Wait()
 		close(s.exited)
-		// Let the reader deliver the last PTY bytes before releasing the file.
+		// Drain final output, but do not wait indefinitely for a background job
+		// that inherited the slave to close it after bash has exited.
+		if err := file.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			file.Close()
+		}
 		<-s.readDone
 		file.Close()
 		m.mu.Lock()

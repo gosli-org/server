@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -209,6 +210,55 @@ func TestTerminalDeliversFinalOutputBeforeShellExit(t *testing.T) {
 	c.input(t, "printf '%20000s' ''; printf '\\146inal-marker\\n'; exit\r")
 	c.until(t, "final-marker\r\n")
 	waitProcessExit(t, pid)
+}
+
+func TestShellExitReleasesPTYWithInheritedBackgroundSlave(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("observing process file descriptors requires Linux /proc")
+	}
+	project := t.TempDir()
+	s := startServer(t, project)
+	c := connect(t, s)
+	pid := shellPID(t, c, project)
+	c.input(t, "sleep 120 & printf '%s' \"$!\" > child.pid; printf 'background-%s\\n' ready\r")
+	c.until(t, "background-ready\r\n")
+	data, err := os.ReadFile(filepath.Join(project, "child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(child, syscall.SIGKILL) })
+	c.input(t, "printf '%20000s' ''; printf '\\146inal-marker\\n'; exit\r")
+	c.until(t, "final-marker\r\n")
+	waitProcessExit(t, pid)
+
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", s.cmd.Process.Pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retained := false
+		for _, entry := range entries {
+			target, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", s.cmd.Process.Pid, entry.Name()))
+			if err == nil && strings.HasSuffix(target, "/ptmx") {
+				retained = true
+			}
+		}
+		if !retained {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("goslid retained the PTY after bash exited with an inherited background slave")
+		case <-tick.C:
+		}
+	}
 }
 
 func TestServerShutdownTerminatesAttachedAndDetachedShells(t *testing.T) {
