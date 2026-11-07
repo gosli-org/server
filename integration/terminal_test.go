@@ -211,12 +211,53 @@ func TestTerminalDeliversFinalOutputBeforeShellExit(t *testing.T) {
 	waitProcessExit(t, pid)
 }
 
-func TestServerShutdownTerminatesAttachedShell(t *testing.T) {
+func TestServerShutdownTerminatesAttachedAndDetachedShells(t *testing.T) {
 	project := t.TempDir()
 	s := startServer(t, project)
 	c := connect(t, s)
 	pid := shellPID(t, c, project)
+	detached := connect(t, s)
+	detachedPID := shellPID(t, detached, project)
+	if err := detached.conn.Close(websocket.StatusNormalClosure, "leave session running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(detachedPID, 0); err != nil {
+		t.Fatalf("detached shell stopped before server shutdown: %v", err)
+	}
 	s.stop(t)
+	waitProcessExit(t, pid)
+	waitProcessExit(t, detachedPID)
+}
+
+func TestDetachedTerminalDrainsOutputAndExits(t *testing.T) {
+	project := t.TempDir()
+	s := startServer(t, project)
+	c := connect(t, s)
+	pid := shellPID(t, c, project)
+	c.input(t, "while [ ! -e continue ]; do sleep 0.01; done; printf '%1048576s' ''; printf completed > finished; exit\r")
+	if err := c.conn.Close(websocket.StatusNormalClosure, "disconnect before continuing work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "finished")); !os.IsNotExist(err) {
+		t.Fatalf("work completed before releasing the post-disconnect barrier: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "continue"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		data, err := os.ReadFile(filepath.Join(project, "finished"))
+		if err == nil && string(data) == "completed" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("detached terminal did not drain output and finish its work")
+		case <-tick.C:
+		}
+	}
 	waitProcessExit(t, pid)
 }
 

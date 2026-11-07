@@ -43,6 +43,10 @@ exit notification, or explicit termination request is provided.
 Use `exit\r` as input to exit bash. Stop `goslid` with Ctrl+C to release all
 sessions. Postman remains an external client; this repository provides no UI.
 
+Disconnecting Postman leaves bash running. The server keeps reading and discards
+detached output until bash exits or `goslid` stops. A new connection can open a
+fresh session; detached output is not saved for replay.
+
 Run the integration checks with:
 
 ```sh
