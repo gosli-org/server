@@ -13,11 +13,13 @@ import (
 
 // Manager owns all terminal sessions until their processes exit or Close is called.
 type Manager struct {
-	dir      string
-	mu       sync.Mutex
-	sessions map[*Session]struct{}
-	closed   bool
-	wg       sync.WaitGroup
+	dir       string
+	mu        sync.Mutex
+	sessions  map[*Session]struct{}
+	closed    bool
+	closeDone chan struct{}
+	closeErr  error
+	wg        sync.WaitGroup
 }
 
 type Session struct {
@@ -32,7 +34,7 @@ type Session struct {
 }
 
 func New(dir string) *Manager {
-	return &Manager{dir: dir, sessions: make(map[*Session]struct{})}
+	return &Manager{dir: dir, sessions: make(map[*Session]struct{}), closeDone: make(chan struct{})}
 }
 
 func (m *Manager) Open() (*Session, error) {
@@ -107,30 +109,51 @@ func (s *Session) Output() <-chan []byte { return s.output }
 // Detach releases the output consumer without ending the terminal session.
 func (s *Session) Detach() { s.detach.Do(func() { close(s.detached) }) }
 
-func (m *Manager) Close() {
+func (m *Manager) Close() (err error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		m.wg.Wait()
-		return
+		<-m.closeDone
+		return m.closeErr
 	}
 	m.closed = true
 	sessions := make([]*Session, 0, len(m.sessions))
 	for s := range m.sessions {
 		sessions = append(sessions, s)
 		close(s.stop)
-		// Give bash an opportunity to hang up its jobs before forcing exit.
-		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGHUP)
-		// Closing the controlling PTY also hangs up the foreground job.
-		s.pty.Close()
 	}
 	m.mu.Unlock()
+	defer func() {
+		m.closeErr = err
+		close(m.closeDone)
+	}()
+	if len(sessions) != 0 {
+		// Interactive bash puts jobs in separate process groups. Keep bash alive
+		// while terminating those groups so it can reap its children.
+		groups, discoverErr := jobGroups(sessions)
+		err = errors.Join(err, discoverErr)
+		for group := range groups {
+			syscall.Kill(-group, syscall.SIGHUP)
+		}
+		waitGroups(groups)
+		for group := range groups {
+			syscall.Kill(-group, syscall.SIGKILL)
+		}
+		waitGroups(groups)
+	}
+	for _, s := range sessions {
+		syscall.Kill(-s.cmd.Process.Pid, syscall.SIGHUP)
+		// Closing the controlling PTY also hangs up any foreground job.
+		s.pty.Close()
+	}
+	deadline := time.Now().Add(time.Second)
 	for _, s := range sessions {
 		select {
 		case <-s.exited:
-		case <-time.After(time.Second):
+		case <-time.After(time.Until(deadline)):
 			syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 		}
 	}
 	m.wg.Wait()
+	return err
 }

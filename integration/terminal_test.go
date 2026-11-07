@@ -279,6 +279,43 @@ func TestServerShutdownTerminatesAttachedAndDetachedShells(t *testing.T) {
 	waitProcessExit(t, detachedPID)
 }
 
+func TestServerShutdownTerminatesJobsIgnoringHangup(t *testing.T) {
+	for _, detached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("detached=%t", detached), func(t *testing.T) {
+			project := t.TempDir()
+			s := startServer(t, project)
+			c := connect(t, s)
+			pid := shellPID(t, c, project)
+			c.input(t, "bash -c 'trap \"\" HUP; echo $$ > background.pid; exec sleep 120' & while [ ! -s background.pid ]; do sleep 0.01; done\r")
+			c.input(t, "bash -c 'trap \"\" HUP; echo $$ > foreground.pid; printf \"foreground-%s\\n\" ready; exec sleep 120'\r")
+			c.until(t, "foreground-ready\r\n")
+			var jobs []int
+			for _, name := range []string{"background.pid", "foreground.pid"} {
+				data, err := os.ReadFile(filepath.Join(project, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				job, err := strconv.Atoi(strings.TrimSpace(string(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				jobs = append(jobs, job)
+				t.Cleanup(func() { syscall.Kill(job, syscall.SIGKILL) })
+			}
+			if detached {
+				if err := c.conn.Close(websocket.StatusNormalClosure, "leave jobs running"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.stop(t)
+			waitProcessExit(t, pid)
+			for _, job := range jobs {
+				waitProcessExit(t, job)
+			}
+		})
+	}
+}
+
 func TestDetachedTerminalDrainsOutputAndExits(t *testing.T) {
 	project := t.TempDir()
 	s := startServer(t, project)

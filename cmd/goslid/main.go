@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,7 +24,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (err error) {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		return err
@@ -35,7 +36,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	terminals := terminal.New(cfg.ProjectDir)
-	defer terminals.Close()
+	defer func() { err = errors.Join(err, terminals.Close()) }()
 	mux := http.NewServeMux()
 	mux.Handle("/ws", connection.New(ctx, dispatcher.New(terminals)))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}

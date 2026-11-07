@@ -4,7 +4,10 @@ This task implements the first local terminal interaction. The permanent behavio
 contract remains in `docs/behavior.md`; authentication, TLS, reattachment, screen
 snapshots, resizing, and multiple sessions per connection are outside this task.
 
-Use a Unix host with Go 1.24 or newer and `bash` available on `PATH`. From the
+Use a Unix host with Go 1.24 or newer and `bash` and POSIX `ps` available on `PATH`.
+Shutdown uses `ps` to discover terminal job process groups before stopping bash.
+Jobs receive SIGHUP, then remaining groups are forcibly terminated after a grace
+period. Failure to discover jobs is reported as a shutdown error. From the
 repository root, start the server with one project directory:
 
 ```sh
