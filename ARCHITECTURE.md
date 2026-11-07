@@ -12,15 +12,16 @@
 | --- | --- | --- |
 | Client connection | `connection` | Ends when the client disconnects. |
 | Terminal session | `terminal` | Survives client disconnection; ends when closed, its process exits, or `goslid` stops. |
-| Terminal output history | `terminal` | Bounded, in memory; independent of client connections. |
+| Terminal screen state | `terminal` | In memory; independent of client connections; ends with the session. |
 | AI execution | `ai` | Survives client disconnection; interrupted when `goslid` stops, without automatic resumption. |
 | Dialogue and completed AI result | `ai`, persisted through `storage` | Survive `goslid` restarts. |
 | Admitted device | `access`, persisted through `storage` | Independent of individual client connections. |
 
 ## Terminal flow
 
-`terminal` retains bounded terminal output history in memory. Output handling must
-isolate the terminal process from backpressure caused by disconnected clients.
+`terminal` consumes output and maintains current terminal screen state in memory
+for snapshots. Attachment provides a consistent snapshot followed by live updates.
+Output handling isolates the terminal process from disconnected clients.
 
 ## Direct AI flow
 
@@ -55,11 +56,11 @@ internal/
 | Location | Responsibility |
 | --- | --- |
 | `cmd/goslid/` | Assemble components and their dependencies; coordinate process startup and shutdown. |
-| `internal/config/` | Load and validate configuration and provide defaults: project roots, connection settings, terminal history limits, and AI tool settings. |
+| `internal/config/` | Load and validate configuration and provide defaults: project roots, connection settings, and AI tool settings. |
 | `internal/connection/` | Manage authenticated, encrypted WebSocket connections, directly or through a relay. Decode and validate message structure, deliver messages to the appropriate client, and handle connection queues and disconnections. Use `access` to verify devices and pass requests to `dispatcher`. |
 | `internal/dispatcher/` | Interpret requests, route them to the responsible component, coordinate operations involving multiple components, and return responses for delivery through `connection`. Coordinate request acceptance before execution begins. |
 | `internal/project/` | Discover projects within configured project roots, maintain the available project list, and resolve a selected project to an allowed working directory. Own discovery and refresh rules. |
-| `internal/terminal/` | Own terminal sessions: PTYs and processes, input and output, terminal size, bounded output history, and which client controls each session. Manage session creation, attachment, detachment, and termination. |
+| `internal/terminal/` | Own terminal sessions: PTYs and processes, input and output, terminal size, screen state and snapshots, and which client controls each session. Manage session creation, attachment, detachment, and termination. |
 | `internal/ai/` | Own direct AI requests and their execution state, AI tool invocation and interaction, dialogues, completed results, and questions awaiting the owner's answer. Resolve repeated accepted request IDs to existing executions. |
 | `internal/access/` | Manage admission of client devices by the owner and verify device identity and permission to connect. Own admitted device records. |
 | `internal/storage/` | Persist and retrieve data for components, including dialogues, completed AI results, and admitted device records. Hide the storage mechanism and location, which may be local or remote. |
@@ -75,7 +76,7 @@ while terminal sessions and AI executions continue. These components expose
 results and output for delivery without owning WebSocket connections.
 
 `storage` provides persistence; the component using it owns the meaning and
-lifecycle of its data. Terminal output history remains in `terminal` memory.
+lifecycle of its data. Terminal screen state remains in `terminal` memory.
 Configuration is loaded during startup and supplied to the components that need
 it. Filesystem monitoring belongs inside `project`; AI tool integrations belong
 inside `ai`.

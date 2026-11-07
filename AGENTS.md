@@ -6,6 +6,8 @@ Before designing, implementing, testing, or reviewing server behavior, read [doc
 
 Before working on server internals, read [ARCHITECTURE.md](ARCHITECTURE.md) for internal structure and technical constraints.
 
+Before working on a Go package, read its `ARCHITECTURE.md`, if present, for package-specific design, technical decisions, and constraints.
+
 Before proposing or changing an architectural decision, read relevant ADRs in `docs/adr/`, if present and not already available in the current context. If the proposal contradicts an existing ADR, identify it explicitly and explain why the decision should be reconsidered.
 
 Before creating a branch or preparing changes for review, read [CONTRIBUTING.md](CONTRIBUTING.md).
