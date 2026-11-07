@@ -27,6 +27,8 @@ type Session struct {
 	stop     chan struct{}
 	readDone chan struct{}
 	exited   chan struct{}
+	detached chan struct{}
+	detach   sync.Once
 }
 
 func New(dir string) *Manager {
@@ -53,7 +55,7 @@ func (m *Manager) Open() (*Session, error) {
 		cmd.Wait()
 		return nil, err
 	}
-	s := &Session{cmd: cmd, pty: file, output: make(chan []byte), stop: make(chan struct{}), readDone: make(chan struct{}), exited: make(chan struct{})}
+	s := &Session{cmd: cmd, pty: file, output: make(chan []byte), stop: make(chan struct{}), readDone: make(chan struct{}), exited: make(chan struct{}), detached: make(chan struct{})}
 	m.sessions[s] = struct{}{}
 	m.wg.Add(2)
 	go func() {
@@ -66,6 +68,8 @@ func (m *Manager) Open() (*Session, error) {
 			if n > 0 {
 				select {
 				case s.output <- append([]byte(nil), buf[:n]...):
+				case <-s.detached:
+					// The session keeps consuming PTY output without retaining it.
 				case <-s.stop:
 					return
 				}
@@ -95,6 +99,9 @@ func (s *Session) Input(data string) error {
 }
 
 func (s *Session) Output() <-chan []byte { return s.output }
+
+// Detach releases the output consumer without ending the terminal session.
+func (s *Session) Detach() { s.detach.Do(func() { close(s.detached) }) }
 
 func (m *Manager) Close() {
 	m.mu.Lock()

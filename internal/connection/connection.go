@@ -31,12 +31,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
 	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	stop := context.AfterFunc(h.ctx, cancel)
 	defer stop()
 	var session *terminal.Session
+	var outputDone chan struct{}
+	defer func() {
+		cancel()
+		if session != nil {
+			session.Detach()
+		}
+		conn.CloseNow()
+		if outputDone != nil {
+			<-outputDone
+		}
+	}()
 	for {
 		kind, data, err := conn.Read(ctx)
 		if err != nil {
@@ -60,12 +69,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if previous == nil {
-			go streamOutput(ctx, conn, session)
+			outputDone = make(chan struct{})
+			go func(session *terminal.Session) {
+				defer close(outputDone)
+				streamOutput(ctx, conn, session)
+			}(session)
 		}
 	}
 }
 
 func streamOutput(ctx context.Context, conn *websocket.Conn, session *terminal.Session) {
+	defer session.Detach()
 	// Retain a partial UTF-8 character across PTY chunks so JSON encoding does
 	// not replace a multibyte character split between reads.
 	var pending []byte
