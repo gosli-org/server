@@ -57,10 +57,28 @@ func isolatedServerCommand(t *testing.T, args ...string) *exec.Cmd {
 	if err := os.WriteFile(path, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return exec.Command(serverBinary, append([]string{"--config", path}, args...)...)
+	cmd := exec.Command(serverBinary, append([]string{"--config", path}, args...)...)
+	cmd.Env = serverEnvironment()
+	return cmd
+}
+
+func serverEnvironment() []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "GOSLI_LISTEN" && key != "GOSLI_PROJECT_DIR" {
+			env = append(env, entry)
+		}
+	}
+	return env
 }
 
 func startServerArgs(t *testing.T, args ...string) *server {
+	t.Helper()
+	return startServerCommand(t, isolatedServerCommand(t, args...))
+}
+
+func startServerCommand(t *testing.T, cmd *exec.Cmd) *server {
 	t.Helper()
 	log, err := os.CreateTemp(t.TempDir(), "goslid-stderr-")
 	if err != nil {
@@ -73,7 +91,6 @@ func startServerArgs(t *testing.T, args ...string) *server {
 			t.Logf("goslid stderr: %s", contents)
 		}
 	})
-	cmd := isolatedServerCommand(t, args...)
 	cmd.Stderr = log
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -215,6 +232,52 @@ func TestTerminalStartsInYAMLConfiguredProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := startServerArgs(t, "--config", path)
+	c := connect(t, s)
+	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
+	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestTerminalStartsInEnvironmentConfiguredProject(t *testing.T) {
+	working := t.TempDir()
+	project := filepath.Join(working, "project")
+	if err := os.Mkdir(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := isolatedServerCommand(t)
+	cmd.Dir = working
+	cmd.Env = append(cmd.Env, "GOSLI_LISTEN=127.0.0.1:0", "GOSLI_PROJECT_DIR=project")
+	s := startServerCommand(t, cmd)
+	c := connect(t, s)
+	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
+	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestTerminalStartsInDefaultConfiguredProject(t *testing.T) {
+	root := t.TempDir()
+	key, configRoot := "XDG_CONFIG_HOME", root
+	switch runtime.GOOS {
+	case "darwin", "ios":
+		key, configRoot = "HOME", filepath.Join(root, "Library", "Application Support")
+	case "windows":
+		key = "AppData"
+	}
+	configDir := filepath.Join(configRoot, "gosli")
+	project := filepath.Join(configDir, "project")
+	if err := os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("listen: '127.0.0.1:0'\nproject-dir: project\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(serverBinary)
+	for _, entry := range serverEnvironment() {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != key {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, key+"="+root)
+	s := startServerCommand(t, cmd)
 	c := connect(t, s)
 	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
 	c.until(t, "cwd:"+project+"\r\n")

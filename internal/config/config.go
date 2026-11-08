@@ -34,11 +34,19 @@ func Parse(args []string) (Config, error) {
 	explicit := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	listenSource, projectSource := "default listen", "default project-dir"
-	if explicit["config"] {
-		data, err := os.ReadFile(configPath)
+	if !explicit["config"] {
+		dir, err := os.UserConfigDir()
 		if err != nil {
+			return Config{}, fmt.Errorf("default config directory: %w", err)
+		}
+		configPath = filepath.Join(dir, "gosli", "config.yaml")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if explicit["config"] || !os.IsNotExist(err) {
 			return Config{}, fmt.Errorf("config file %q: %w", configPath, err)
 		}
+	} else {
 		if err := validateYAML(data); err != nil {
 			return Config{}, fmt.Errorf("config file %q: %w", configPath, err)
 		}
@@ -60,6 +68,12 @@ func Parse(args []string) (Config, error) {
 				cfg.ProjectDir = filepath.Join(filepath.Dir(configPath), cfg.ProjectDir)
 			}
 		}
+	}
+	if value, ok := os.LookupEnv("GOSLI_LISTEN"); ok && !explicit["listen"] {
+		cfg.Listen, listenSource = value, "environment GOSLI_LISTEN (listen)"
+	}
+	if value, ok := os.LookupEnv("GOSLI_PROJECT_DIR"); ok && !explicit["project-dir"] {
+		cfg.ProjectDir, projectSource = value, "environment GOSLI_PROJECT_DIR (project-dir)"
 	}
 	if explicit["listen"] {
 		listenSource = "CLI --listen"
