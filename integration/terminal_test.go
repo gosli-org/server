@@ -48,6 +48,38 @@ type server struct {
 
 func startServer(t *testing.T, projectDir string) *server {
 	t.Helper()
+	return startServerArgs(t, "-project-dir", projectDir, "-listen", "127.0.0.1:0")
+}
+
+func isolatedServerCommand(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(serverBinary, append([]string{"--config", path}, args...)...)
+	cmd.Env = serverEnvironment()
+	return cmd
+}
+
+func serverEnvironment() []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "GOSLI_LISTEN" && key != "GOSLI_PROJECT_DIR" {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
+
+func startServerArgs(t *testing.T, args ...string) *server {
+	t.Helper()
+	return startServerCommand(t, isolatedServerCommand(t, args...))
+}
+
+func startServerCommand(t *testing.T, cmd *exec.Cmd) *server {
+	t.Helper()
 	log, err := os.CreateTemp(t.TempDir(), "goslid-stderr-")
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +91,6 @@ func startServer(t *testing.T, projectDir string) *server {
 			t.Logf("goslid stderr: %s", contents)
 		}
 	})
-	cmd := exec.Command(serverBinary, "-project-dir", projectDir, "-listen", "127.0.0.1:0")
 	cmd.Stderr = log
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -188,6 +219,80 @@ func TestTerminalStartsInConfiguredProject(t *testing.T) {
 	c := connect(t, s)
 	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
 	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestTerminalStartsInYAMLConfiguredProject(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	if err := os.Mkdir(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("listen: '127.0.0.1:0'\nproject-dir: project\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := startServerArgs(t, "--config", path)
+	c := connect(t, s)
+	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
+	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestTerminalStartsInEnvironmentConfiguredProject(t *testing.T) {
+	working := t.TempDir()
+	project := filepath.Join(working, "project")
+	if err := os.Mkdir(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := isolatedServerCommand(t)
+	cmd.Dir = working
+	cmd.Env = append(cmd.Env, "GOSLI_LISTEN=127.0.0.1:0", "GOSLI_PROJECT_DIR=project")
+	s := startServerCommand(t, cmd)
+	c := connect(t, s)
+	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
+	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestTerminalStartsInDefaultConfiguredProject(t *testing.T) {
+	root := t.TempDir()
+	key, configRoot := "XDG_CONFIG_HOME", root
+	switch runtime.GOOS {
+	case "darwin", "ios":
+		key, configRoot = "HOME", filepath.Join(root, "Library", "Application Support")
+	case "windows":
+		key = "AppData"
+	}
+	configDir := filepath.Join(configRoot, "gosli")
+	project := filepath.Join(configDir, "project")
+	if err := os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("listen: '127.0.0.1:0'\nproject-dir: project\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(serverBinary)
+	for _, entry := range serverEnvironment() {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != key {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, key+"="+root)
+	s := startServerCommand(t, cmd)
+	c := connect(t, s)
+	c.input(t, "printf 'cwd:%s\\n' \"$PWD\"\r")
+	c.until(t, "cwd:"+project+"\r\n")
+}
+
+func TestServerRejectsMalformedConfigurationBeforeListening(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("listen: null\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := isolatedServerCommand(t, "--config", path, "--listen", "127.0.0.1:0")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), path) || !strings.Contains(string(output), "listen") || strings.Contains(string(output), "listening ws://") {
+		t.Fatalf("configuration did not fail before listening: %v, %s", err, output)
+	}
 }
 
 func TestTerminalRetainsShellStateAndControlSequences(t *testing.T) {
@@ -381,7 +486,7 @@ func waitProcessExit(t *testing.T, pid int) {
 }
 
 func TestServerRejectsNonLoopbackListener(t *testing.T) {
-	cmd := exec.Command(serverBinary, "-listen", "0.0.0.0:8080")
+	cmd := isolatedServerCommand(t, "-listen", "0.0.0.0:8080")
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "loopback") {
 		t.Fatalf("non-loopback listener was not rejected: %v, %s", err, output)
