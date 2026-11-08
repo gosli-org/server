@@ -9,6 +9,8 @@ architecture. Existing API contracts do not yet cover all behavior defined here.
 `goslid` serves one owner across multiple client devices: project browsing,
 terminal sessions, and direct AI requests.
 
+Startup settings and validation are described in [Configuration](configuration.md).
+
 Each device requires admission by the owner to access projects, terminal sessions,
 and dialogues. The admission mechanism remains unresolved.
 
