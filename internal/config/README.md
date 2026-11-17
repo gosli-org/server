@@ -28,10 +28,19 @@ The exported API for other server packages is
 without the executable name and returns validated settings, including an absolute
 `ProjectDir`, or an error. It also reads the process environment and selected file.
 
-[`cmd/goslid`](../../cmd/goslid/main.go) already uses this API:
+`Parse` returns errors without printing diagnostics. `--help` and `-h` return
+`flag.ErrHelp`; `PrintUsage(io.Writer)` writes the shared CLI usage. `goslid`
+prints help to stdout and exits 0. Other startup errors print once to stderr and
+exit 1.
+
+[`cmd/goslid`](../../cmd/goslid/main.go) uses this API:
 
 ```go
 cfg, err := config.Parse(os.Args[1:])
+if errors.Is(err, flag.ErrHelp) {
+    config.PrintUsage(os.Stdout)
+    return nil
+}
 if err != nil {
     return err
 }

@@ -2,8 +2,10 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -490,5 +492,48 @@ func TestServerRejectsNonLoopbackListener(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "loopback") {
 		t.Fatalf("non-loopback listener was not rejected: %v, %s", err, output)
+	}
+}
+
+func TestServerCLIOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		exitCode   int
+		diagnostic string
+	}{
+		{"long help", []string{"--help"}, 0, ""},
+		{"short help", []string{"-h"}, 0, ""},
+		{"unknown flag", []string{"--unknown"}, 1, "flag provided but not defined: -unknown"},
+		{"missing value", []string{"--listen"}, 1, "flag needs an argument: -listen"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, serverBinary, tt.args...)
+			cmd.Env = serverEnvironment()
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			exitCode := 0
+			if err != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatal(err)
+				}
+				exitCode = exitErr.ExitCode()
+			}
+			if exitCode != tt.exitCode {
+				t.Fatalf("exit %d; want %d; stdout=%q stderr=%q", exitCode, tt.exitCode, stdout.String(), stderr.String())
+			}
+			if tt.exitCode == 0 {
+				if stderr.Len() != 0 || !strings.HasPrefix(stdout.String(), "Usage of goslid:\n") || strings.Contains(stdout.String(), "listening ws://") {
+					t.Fatalf("unexpected help: stdout=%q stderr=%q", stdout.String(), stderr.String())
+				}
+			} else if stdout.Len() != 0 || stderr.String() != tt.diagnostic+"\n" {
+				t.Fatalf("unexpected diagnostic: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
 	}
 }

@@ -15,27 +15,31 @@ has no file watcher, background work, or persistent state.
 `Parse` coordinates command-line parsing, YAML loading, source selection, and
 validation, then constructs `Config` from the resolved values.
 `parseCommandLine` uses a dedicated standard-library `flag.FlagSet` with
-`ContinueOnError`. Flag registration supplies built-in defaults. `FlagSet.Visit`
-records which flags were explicitly supplied, including empty values.
+`ContinueOnError` and discarded output. A shared registration helper supplies
+built-in defaults for parsing and usage. `FlagSet.Visit` copies explicitly supplied
+values into private typed fields; nil distinguishes absent flags from empty values.
+The flag set does not escape CLI parsing. `PrintUsage` writes usage to a supplied
+writer. The executable handles `flag.ErrHelp`, prints usage to stdout, and exits
+successfully; other startup errors are printed once to stderr.
 
-`readConfigFile` reads and structurally validates the selected YAML file even when CLI flags
-override both settings. The file is currently decoded twice: first into
-`yaml.Node` values to enforce string keys and values and a single mapping document,
-then into typed fields with `KnownFields(true)` to reject unknown keys. Typed
-decoding also rejects duplicate keys. The first pass is necessary because the YAML
-library's string decoding accepts numbers and booleans. The intermediate fields
-are `*string` so an absent key is distinguishable from an explicitly empty value.
+`readConfigFile` reads the selected YAML file even when CLI flags override both
+settings. `decodeYAML` parses it once into `yaml.Node` values and extracts typed
+file values while enforcing one mapping document, known unique string keys, and
+scalar string values. Node inspection is necessary because the YAML library's
+typed string decoding accepts numbers and booleans. The intermediate fields are
+`*string` so an absent key is distinguishable from an explicitly empty value.
 
-`commandLine.selectSetting` chooses each setting once, in priority order:
-explicit CLI, environment, YAML, default. `os.LookupEnv` preserves the distinction
-between unset and empty environment variables. A private `setting` keeps the
-value, source description, and resolution base together. YAML paths use the
+`Parse` obtains environment values through `os.LookupEnv`, preserving unset versus
+empty values. The pure `selectSetting` function chooses each setting once, in
+priority order: explicit CLI, environment, YAML, default. A private `setting` keeps
+the value, source description, and resolution base together. YAML paths use the
 selected file's directory; CLI, environment, and default paths use the working
-directory.
+directory. Defaults are defined independently of CLI parsing.
 
-`resolveProjectDir` expands `~` and a leading `~/` through `os.UserHomeDir`,
-resolves other relative paths against their base, makes the path absolute, and
-checks it with `os.Stat`. `validateListen` checks the listener with
+`resolveProjectDir` obtains the home directory only for `~` and a leading `~/`.
+The pure `projectPath` function expands home paths or joins relative paths to
+their supplied base. The resolver then makes the path absolute, consulting the
+working directory only when needed, and checks it with `os.Stat`. `validateListen` checks the listener with
 `net.SplitHostPort`, `net.ParseIP`, and `strconv.ParseUint`. `Parse` adds the
 selected source to validation errors. Source metadata and the selected file path
 are not part of the returned `Config`. Loading reads the filesystem and process

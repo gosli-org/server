@@ -49,6 +49,10 @@ func TestParseRejectsInvalidYAMLEvenWithCLIOverrides(t *testing.T) {
 		"listen: 123\n", "listen: true\n", "listen: null\n", "project-dir: null\n",
 		"other: value\n", "listen: one\nlisten: two\n", "[one, two]\n", "null\n",
 		"listen: [\n", "{}\n---\n{}\n", "project-dir: {}\n", "42\n",
+		"1: value\n", "true: value\n", "? [a, b]\n: value\n",
+		"listen: &address '127.0.0.1:0'\nproject-dir: *address\n",
+		"project-dir: one\nproject-dir: two\n", "{}\n---\n",
+		"listen: {nested: value}\n", "listen: 1.5\n",
 	} {
 		t.Run(body, func(t *testing.T) {
 			path := writeConfig(t, body)
