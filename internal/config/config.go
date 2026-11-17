@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -18,92 +19,146 @@ type Config struct {
 	ProjectDir string
 }
 
+// setting keeps a selected value and its origin together until validation finishes.
+type setting struct {
+	value  string
+	source string
+	base   string
+}
+
+type fileValues struct {
+	Listen     *string `yaml:"listen"`
+	ProjectDir *string `yaml:"project-dir"`
+}
+
+type commandLine struct {
+	flags      *flag.FlagSet
+	explicit   map[string]bool
+	configPath string
+}
+
 func Parse(args []string) (Config, error) {
-	var cfg Config
-	var configPath string
-	flags := flag.NewFlagSet("goslid", flag.ContinueOnError)
-	flags.StringVar(&configPath, "config", "", "YAML configuration file")
-	flags.StringVar(&cfg.Listen, "listen", "127.0.0.1:8080", "loopback IP address and port")
-	flags.StringVar(&cfg.ProjectDir, "project-dir", ".", "working directory for terminal sessions")
-	if err := flags.Parse(args); err != nil {
+	cli, err := parseCommandLine(args)
+	if err != nil {
 		return Config{}, err
 	}
-	if flags.NArg() != 0 {
-		return Config{}, fmt.Errorf("unexpected arguments: %v", flags.Args())
+	values, err := readConfigFile(cli.configPath, cli.explicit["config"])
+	if err != nil {
+		return Config{}, err
 	}
-	explicit := make(map[string]bool)
-	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
-	listenSource, projectSource := "default listen", "default project-dir"
-	if !explicit["config"] {
+
+	listen := cli.selectSetting("listen", "GOSLI_LISTEN", values.Listen)
+	project := cli.selectSetting("project-dir", "GOSLI_PROJECT_DIR", values.ProjectDir)
+	if err := validateListen(listen.value); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", listen.source, err)
+	}
+	projectDir, err := resolveProjectDir(project.value, project.base)
+	if err != nil {
+		return Config{}, fmt.Errorf("%s: %w", project.source, err)
+	}
+	return Config{Listen: listen.value, ProjectDir: projectDir}, nil
+}
+
+func parseCommandLine(args []string) (commandLine, error) {
+	cli := commandLine{
+		flags:    flag.NewFlagSet("goslid", flag.ContinueOnError),
+		explicit: make(map[string]bool),
+	}
+	cli.flags.StringVar(&cli.configPath, "config", "", "YAML configuration file")
+	cli.flags.String("listen", "127.0.0.1:8080", "loopback IP address and port")
+	cli.flags.String("project-dir", ".", "working directory for terminal sessions")
+	if err := cli.flags.Parse(args); err != nil {
+		return commandLine{}, err
+	}
+	if cli.flags.NArg() != 0 {
+		return commandLine{}, fmt.Errorf("unexpected arguments: %v", cli.flags.Args())
+	}
+	cli.flags.Visit(func(f *flag.Flag) { cli.explicit[f.Name] = true })
+	if !cli.explicit["config"] {
 		dir, err := os.UserConfigDir()
 		if err != nil {
-			return Config{}, fmt.Errorf("default config directory: %w", err)
+			return commandLine{}, fmt.Errorf("default config directory: %w", err)
 		}
-		configPath = filepath.Join(dir, "gosli", "config.yaml")
+		cli.configPath = filepath.Join(dir, "gosli", "config.yaml")
 	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if explicit["config"] || !os.IsNotExist(err) {
-			return Config{}, fmt.Errorf("config file %q: %w", configPath, err)
-		}
-	} else {
-		if err := validateYAML(data); err != nil {
-			return Config{}, fmt.Errorf("config file %q: %w", configPath, err)
-		}
-		var values struct {
-			Listen     *string `yaml:"listen"`
-			ProjectDir *string `yaml:"project-dir"`
-		}
-		decoder := yaml.NewDecoder(bytes.NewReader(data))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&values); err != nil && err != io.EOF {
-			return Config{}, fmt.Errorf("config file %q: %w", configPath, err)
-		}
-		if values.Listen != nil && !explicit["listen"] {
-			cfg.Listen, listenSource = *values.Listen, fmt.Sprintf("config file %q listen", configPath)
-		}
-		if values.ProjectDir != nil && !explicit["project-dir"] {
-			cfg.ProjectDir, projectSource = *values.ProjectDir, fmt.Sprintf("config file %q project-dir", configPath)
-			if cfg.ProjectDir != "" && !filepath.IsAbs(cfg.ProjectDir) {
-				cfg.ProjectDir = filepath.Join(filepath.Dir(configPath), cfg.ProjectDir)
-			}
-		}
+	return cli, nil
+}
+
+func readConfigFile(path string, required bool) (fileValues, error) {
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err) && !required:
+		return fileValues{}, nil
+	case err != nil:
+		return fileValues{}, fmt.Errorf("config file %q: %w", path, err)
 	}
-	if value, ok := os.LookupEnv("GOSLI_LISTEN"); ok && !explicit["listen"] {
-		cfg.Listen, listenSource = value, "environment GOSLI_LISTEN (listen)"
+	if err := validateYAML(data); err != nil {
+		return fileValues{}, fmt.Errorf("config file %q: %w", path, err)
 	}
-	if value, ok := os.LookupEnv("GOSLI_PROJECT_DIR"); ok && !explicit["project-dir"] {
-		cfg.ProjectDir, projectSource = value, "environment GOSLI_PROJECT_DIR (project-dir)"
+	var values fileValues
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&values); err != nil && err != io.EOF {
+		return fileValues{}, fmt.Errorf("config file %q: %w", path, err)
 	}
-	if explicit["listen"] {
-		listenSource = "CLI --listen"
+	return values, nil
+}
+
+func (cli commandLine) selectSetting(name, envName string, fileValue *string) setting {
+	f := cli.flags.Lookup(name)
+	envValue, envPresent := os.LookupEnv(envName)
+	switch {
+	case cli.explicit[name]:
+		return setting{value: f.Value.String(), source: "CLI --" + name, base: "."}
+	case envPresent:
+		return setting{value: envValue, source: fmt.Sprintf("environment %s (%s)", envName, name), base: "."}
+	case fileValue != nil:
+		return setting{
+			value:  *fileValue,
+			source: fmt.Sprintf("config file %q %s", cli.configPath, name),
+			base:   filepath.Dir(cli.configPath),
+		}
+	default:
+		return setting{value: f.DefValue, source: "default " + name, base: "."}
 	}
-	if explicit["project-dir"] {
-		projectSource = "CLI --project-dir"
-	}
-	host, port, err := net.SplitHostPort(cfg.Listen)
+}
+
+func validateListen(address string) error {
+	host, port, err := net.SplitHostPort(address)
 	if err != nil || !net.ParseIP(host).IsLoopback() {
-		return Config{}, fmt.Errorf("%s: listen address must use a loopback IP", listenSource)
+		return fmt.Errorf("listen address must use a loopback IP")
 	}
-	_, err = strconv.ParseUint(port, 10, 16)
-	if err != nil || port == "" {
-		return Config{}, fmt.Errorf("%s: listen port must be numeric in 0–65535", listenSource)
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil || port == "" {
+		return fmt.Errorf("listen port must be numeric in 0–65535")
 	}
-	if cfg.ProjectDir == "" {
-		return Config{}, fmt.Errorf("%s: project directory must not be empty", projectSource)
+	return nil
+}
+
+func resolveProjectDir(path, base string) (string, error) {
+	switch {
+	case path == "":
+		return "", fmt.Errorf("project directory must not be empty")
+	case path == "~" || strings.HasPrefix(path, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("home directory: %w", err)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path[1:], "/"))
+	case !filepath.IsAbs(path):
+		path = filepath.Join(base, path)
 	}
-	cfg.ProjectDir, err = filepath.Abs(cfg.ProjectDir)
+	path, err := filepath.Abs(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("%s: %w", projectSource, err)
+		return "", err
 	}
-	info, err := os.Stat(cfg.ProjectDir)
+	info, err := os.Stat(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("%s: project directory: %w", projectSource, err)
+		return "", fmt.Errorf("project directory: %w", err)
 	}
 	if !info.IsDir() {
-		return Config{}, fmt.Errorf("%s: project directory is not a directory", projectSource)
+		return "", fmt.Errorf("project directory is not a directory")
 	}
-	return cfg, nil
+	return path, nil
 }
 
 // YAML's string decoding accepts numbers and booleans; check original node types

@@ -72,6 +72,39 @@ func TestParseExplicitYAML(t *testing.T) {
 	}
 }
 
+func TestParseExpandsProjectHome(t *testing.T) {
+	for _, source := range []string{"YAML", "environment", "CLI"} {
+		for _, project := range []string{"~", "~/sources"} {
+			t.Run(source+"/"+project, func(t *testing.T) {
+				isolateConfig(t)
+				home := t.TempDir()
+				t.Setenv("HOME", home)
+				t.Setenv("USERPROFILE", home)
+				want := home
+				if project != "~" {
+					want = filepath.Join(home, "sources")
+					if err := os.Mkdir(want, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args []string
+				switch source {
+				case "YAML":
+					args = []string{"--config", writeConfig(t, "project-dir: '"+project+"'\n")}
+				case "environment":
+					t.Setenv("GOSLI_PROJECT_DIR", project)
+				case "CLI":
+					args = []string{"--project-dir", project}
+				}
+				cfg, err := config.Parse(args)
+				if err != nil || cfg.ProjectDir != want {
+					t.Fatalf("home expansion: got %q, %v; want %q", cfg.ProjectDir, err, want)
+				}
+			})
+		}
+	}
+}
+
 func TestParseRejectsInvalidEffectiveSettings(t *testing.T) {
 	isolateConfig(t)
 	for _, args := range [][]string{

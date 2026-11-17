@@ -56,7 +56,7 @@ internal/
 | Location | Responsibility |
 | --- | --- |
 | `cmd/goslid/` | Assemble components and their dependencies; coordinate process startup and shutdown. |
-| `internal/config/` | Load and validate configuration and provide defaults: project roots, connection settings, and AI tool settings. |
+| [internal/config/](internal/config/ARCHITECTURE.md) | Load and validate configuration and provide defaults: project roots, connection settings, and AI tool settings. |
 | `internal/connection/` | Manage authenticated, encrypted WebSocket connections, directly or through a relay. Decode and validate message structure, deliver messages to the appropriate client, and handle connection queues and disconnections. Use `access` to verify devices and pass requests to `dispatcher`. |
 | `internal/dispatcher/` | Interpret requests, route them to the responsible component, coordinate operations involving multiple components, and return responses for delivery through `connection`. Coordinate request acceptance before execution begins. |
 | `internal/project/` | Discover projects within configured project roots, maintain the available project list, and resolve a selected project to an allowed working directory. Own discovery and refresh rules. |
